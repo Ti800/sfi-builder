@@ -1,0 +1,220 @@
+name: Build SFI IPA (full, unsigned)
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "sing-box tag，如 v1.15.0-alpha.12 / v1.14.3（留空=最新 release）"
+        required: false
+        default: ""
+      channel:
+        description: "ref 留空时用哪个通道"
+        type: choice
+        options: [prerelease, stable]
+        default: prerelease
+      bundle_id:
+        description: "BASE_PACKAGE_IDENTIFIER（主 App Bundle ID，扩展为 <id>.extension 等）"
+        required: true
+        default: "io.nekohasekai.sfamt"
+      publish:
+        description: "发布到 Releases"
+        type: boolean
+        default: true
+  schedule:
+    - cron: "17 */6 * * *"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.r.outputs.tag }}
+      version: ${{ steps.r.outputs.version }}
+      skip: ${{ steps.r.outputs.skip }}
+      bundle_id: ${{ steps.r.outputs.bundle_id }}
+      release_tag: ${{ steps.r.outputs.release_tag }}
+    steps:
+      - id: r
+        env:
+          GH_TOKEN: ${{ github.token }}
+          IN_REF: ${{ inputs.ref }}
+          IN_CHANNEL: ${{ inputs.channel || 'prerelease' }}
+          IN_BID: ${{ inputs.bundle_id || 'io.nekohasekai.sfamt' }}
+          EVENT: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+          if [ -n "$IN_REF" ]; then
+            TAG="$IN_REF"
+          elif [ "$IN_CHANNEL" = "stable" ]; then
+            TAG=$(gh api repos/SagerNet/sing-box/releases/latest -q .tag_name)
+          else
+            TAG=$(gh api "repos/SagerNet/sing-box/releases?per_page=1" -q '.[0].tag_name')
+          fi
+          VERSION="${TAG#v}"
+          RTAG="$TAG"
+          if [ "$IN_BID" != "io.nekohasekai.sfamt" ]; then RTAG="$TAG-$IN_BID"; fi
+          SKIP=false
+          if [ "$EVENT" = "schedule" ] && gh release view "$RTAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            SKIP=true
+          fi
+          echo "tag=$TAG version=$VERSION bundle=$IN_BID release=$RTAG skip=$SKIP"
+          {
+            echo "tag=$TAG"; echo "version=$VERSION"; echo "skip=$SKIP"
+            echo "bundle_id=$IN_BID"; echo "release_tag=$RTAG"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: resolve
+    if: needs.resolve.outputs.skip != 'true'
+    runs-on: xcode-27
+    timeout-minutes: 120
+    env:
+      TAG: ${{ needs.resolve.outputs.tag }}
+      VERSION: ${{ needs.resolve.outputs.version }}
+      BID: ${{ needs.resolve.outputs.bundle_id }}
+      DISABLE_SWIFTLINT: "1"
+    steps:
+      - name: Checkout sing-box (official)
+        uses: actions/checkout@v5
+        with:
+          repository: SagerNet/sing-box
+          ref: ${{ needs.resolve.outputs.tag }}
+          submodules: recursive
+          fetch-depth: 1
+
+      - name: Read Go version
+        id: gov
+        run: |
+          V=$(grep -m1 -oE 'go-version: [0-9.]+' .github/workflows/build.yml | awk '{print $2}')
+          echo "v=${V:-1.26.8}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ steps.gov.outputs.v }}
+          cache: false
+
+      - name: Patch Go for iOS
+        run: |
+          if [ -x .github/patch_go_for_ios.sh ]; then .github/patch_go_for_ios.sh; fi
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/go/pkg/mod
+            ~/Library/Caches/go-build
+          key: go-ios-${{ steps.gov.outputs.v }}-${{ hashFiles('go.sum') }}
+          restore-keys: go-ios-${{ steps.gov.outputs.v }}-
+
+      - name: Build Libbox.xcframework (ios/arm64)
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          git tag "$TAG" -f
+          make lib_install
+          export PATH="$PATH:$(go env GOPATH)/bin"
+          go run ./cmd/internal/build_libbox -target apple -platform ios/arm64
+          rm -rf clients/apple/Libbox.xcframework
+          cp -R Libbox.xcframework clients/apple/Libbox.xcframework
+
+      - name: Sync Apple project version
+        run: go run -v ./cmd/internal/update_apple_version --ci
+
+      - name: Build SFI (unsigned)
+        working-directory: clients/apple
+        run: |
+          set -o pipefail
+          xcodebuild -version
+          xcodebuild build \
+            -skipPackagePluginValidation \
+            -scheme SFI \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/dd \
+            BASE_PACKAGE_IDENTIFIER="$BID" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ENABLE_BITCODE=NO 2>&1 | tail -n 300
+
+      - name: Package IPA (ad-hoc, entitlements embedded)
+        working-directory: clients/apple
+        run: |
+          set -euo pipefail
+          APP="build/dd/Build/Products/Release-iphoneos/sing-box.app"
+          [ -d "$APP" ] || { find build/dd/Build/Products -maxdepth 3; exit 1; }
+          rm -rf build/ipa build/ent && mkdir -p build/ipa/Payload build/ent
+          cp -R "$APP" build/ipa/Payload/
+          A="build/ipa/Payload/sing-box.app"
+          GROUP="group.$BID"
+          mkent() {
+            sed -e "s#\$(APP_GROUP_IDENTIFIER)#$GROUP#g" \
+                -e "s#\$(BASE_PACKAGE_IDENTIFIER)#$BID#g" "$1" > "$2"
+          }
+          sign() {
+            if [ -n "${2:-}" ] && [ -f "$2" ]; then
+              out="build/ent/$(basename "$1").entitlements"; mkent "$2" "$out"
+              codesign -f -s - --entitlements "$out" --generate-entitlement-der "$1"
+            else
+              codesign -f -s - "$1"
+            fi
+          }
+          find "$A" -depth -name "*.dylib" | while read -r f; do codesign -f -s - "$f"; done
+          find "$A" -depth -name "*.framework" | while read -r f; do sign "$f"; done
+          for ext in "$A"/PlugIns/*.appex "$A"/Extensions/*.appex; do
+            [ -d "$ext" ] || continue
+            n=$(basename "$ext" .appex)
+            sign "$ext" "$n/$n.entitlements"
+          done
+          sign "$A" "SFI/SFI.entitlements"
+          echo "== bundles =="
+          for e in "$A"/PlugIns/*.appex "$A"/Extensions/*.appex; do
+            [ -d "$e" ] || continue
+            echo "$(basename "$e")  $(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$e/Info.plist")"
+          done
+          echo "sing-box.app  $(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$A/Info.plist")  $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$A/Info.plist")"
+          NAME="SFI-${VERSION}-full-unsigned.ipa"
+          if [ "$BID" != "io.nekohasekai.sfamt" ]; then NAME="SFI-${VERSION}-${BID}-full-unsigned.ipa"; fi
+          (cd build/ipa && zip -qry "../$NAME" Payload)
+          (cd build/ent && zip -qr "../entitlements-${VERSION}.zip" .)
+          ls -lh build/*.ipa build/*.zip
+          echo "IPA=clients/apple/build/$NAME" >> "$GITHUB_ENV"
+          echo "ENTZIP=clients/apple/build/entitlements-${VERSION}.zip" >> "$GITHUB_ENV"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: SFI-${{ needs.resolve.outputs.version }}-full-unsigned
+          path: |
+            ${{ env.IPA }}
+            ${{ env.ENTZIP }}
+          compression-level: 0
+
+      - name: Publish release
+        if: github.event_name == 'schedule' || inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RTAG: ${{ needs.resolve.outputs.release_tag }}
+        run: |
+          set -e
+          PRE=""
+          case "$VERSION" in *-*) PRE="--prerelease";; esac
+          APPLE_SHA=$(git -C clients/apple rev-parse --short HEAD)
+          TITLE="SFI $VERSION"
+          if [ "$BID" != "io.nekohasekai.sfamt" ]; then TITLE="$TITLE ($BID)"; fi
+          cat > notes.md <<EOF
+          官方源码构建，完整版，未签名（ad-hoc）。
+
+          - sing-box: \`$TAG\`
+          - sing-box-for-apple: \`$APPLE_SHA\`
+          - Bundle ID: \`$BID\`（App Group: \`group.$BID\`）
+          - 扩展：Extension（VPN）/ Widget / Share / Action / FileProvider / Intents
+
+          重签需为每个 appex 准备对应描述文件；主 App 与 Extension 需 Network Extension (packet-tunnel-provider) 权限。
+          EOF
+          gh release delete "$RTAG" -R "$GITHUB_REPOSITORY" -y --cleanup-tag 2>/dev/null || true
+          gh release create "$RTAG" -R "$GITHUB_REPOSITORY" $PRE --target main \
+            --title "$TITLE" --notes-file notes.md "$IPA" "$ENTZIP"
