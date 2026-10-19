@@ -185,7 +185,7 @@ jobs:
           [ -d "$APP" ] || { find build/dd/Build/Products -maxdepth 3; exit 1; }
           rm -rf build/out && mkdir -p build/out
           make_ipa() { # $1 app group  $2 name suffix
-            local GROUP="$1" SUF="$2" W="build/w$SUF"
+            local GROUP="$1"; local SUF="$2"; local W="build/w$2"
             rm -rf "$W" && mkdir -p "$W/ipa/Payload" "$W/ent"
             cp -R "$APP" "$W/ipa/Payload/"
             local A="$W/ipa/Payload/sing-box.app"
