@@ -1,0 +1,40 @@
+{
+  "name": "sing-box (SFI builds)",
+  "identifier": "io.github.ti800.sfi-builder",
+  "subtitle": "Unsigned full SFI IPA from official source",
+  "website": "https://github.com/Ti800/sfi-builder",
+  "iconURL": "https://raw.githubusercontent.com/Ti800/sfi-builder/main/icon.png",
+  "tintColor": "#2D7FF9",
+  "apps": [
+    {
+      "name": "sing-box",
+      "bundleIdentifier": "io.nekohasekai.sfamt",
+      "developerName": "SagerNet",
+      "subtitle": "The universal proxy platform",
+      "localizedDescription": "Official sing-box (SFI) built from SagerNet source, full version with all extensions, unsigned.",
+      "iconURL": "https://raw.githubusercontent.com/Ti800/sfi-builder/main/icon.png",
+      "tintColor": "#2D7FF9",
+      "category": "utilities",
+      "versions": [
+        {
+          "version": "1.15.0-alpha.12",
+          "date": "2026-10-19T09:47:48Z",
+          "localizedDescription": "sing-box v1.15.0-alpha.12 (pre-release)",
+          "downloadURL": "https://github.com/Ti800/sfi-builder/releases/download/v1.15.0-alpha.12/SFI-1.15.0-alpha.12-full-unsigned.ipa",
+          "size": 44696287,
+          "minOSVersion": "15.0"
+        }
+      ],
+      "appPermissions": {
+        "entitlements": [],
+        "privacy": {}
+      },
+      "version": "1.15.0-alpha.12",
+      "versionDate": "2026-10-19T09:47:48Z",
+      "downloadURL": "https://github.com/Ti800/sfi-builder/releases/download/v1.15.0-alpha.12/SFI-1.15.0-alpha.12-full-unsigned.ipa",
+      "size": 44696287,
+      "versionDescription": "sing-box v1.15.0-alpha.12 (pre-release)"
+    }
+  ],
+  "news": []
+}
