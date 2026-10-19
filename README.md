@@ -14,3 +14,9 @@
 
 Release 附带 `entitlements-*.zip`（已展开变量），可供重签工具参考。
 App Group 必须与 Info.plist 中 `AppGroupIdentifier`（`group.<id>`）一致，否则 VPN 扩展与主 App 无法共享配置；如证书的 Bundle ID 不同，用 Run workflow 填 `bundle_id` 重新编译即可。
+
+## AltStore / Feather 源
+```
+https://raw.githubusercontent.com/Ti800/sfi-builder/main/source.json
+```
+自定义 `bundle_id` 构建会生成 `source-<bundle_id>.json`。每次构建后自动更新。

@@ -181,6 +181,11 @@ jobs:
           cp -R "$APP" build/ipa/Payload/
           A="build/ipa/Payload/sing-box.app"
           GROUP="group.$BID"
+          # 版本号写成核心版本，方便 Feather/AltStore 判断更新
+          for pl in "$A/Info.plist" "$A"/PlugIns/*.appex/Info.plist "$A"/Extensions/*.appex/Info.plist; do
+            [ -f "$pl" ] || continue
+            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$pl"
+          done
           mkent() {
             sed -e "s#\$(APP_GROUP_IDENTIFIER)#$GROUP#g" \
                 -e "s#\$(BASE_PACKAGE_IDENTIFIER)#$BID#g" "$1" > "$2"
@@ -240,6 +245,7 @@ jobs:
 
           - sing-box: \`$TAG\`
           - sing-box-for-apple: \`$APPLE_SHA\`
+          - App version: \`$VERSION\`
           - Bundle ID: \`$BID\`（App Group: \`group.$BID\`）
           - 扩展：Extension（VPN）/ Widget / Share / Action / FileProvider / Intents
 
@@ -248,3 +254,20 @@ jobs:
           gh release delete "$RTAG" -R "$GITHUB_REPOSITORY" -y --cleanup-tag 2>/dev/null || true
           gh release create "$RTAG" -R "$GITHUB_REPOSITORY" $PRE --target main \
             --title "$TITLE" --notes-file notes.md "$IPA" "$ENTZIP"
+
+  source:
+    needs: build
+    if: always() && (needs.build.result == 'success' || needs.build.result == 'skipped')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Generate AltStore source
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 gen.py
+      - name: Commit
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add source*.json
+          git diff --cached --quiet || { git commit -m "Update source"; git push; }
