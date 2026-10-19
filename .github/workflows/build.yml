@@ -16,6 +16,10 @@ on:
         description: "BASE_PACKAGE_IDENTIFIER（主 App Bundle ID，扩展为 <id>.extension 等）"
         required: true
         default: "io.nekohasekai.sfamt"
+      apple_ref:
+        description: "sing-box-for-apple 提交/分支（留空=自动匹配 Bump version 提交）"
+        required: false
+        default: ""
       publish:
         description: "发布到 Releases"
         type: boolean
@@ -39,6 +43,7 @@ jobs:
       skip: ${{ steps.r.outputs.skip }}
       bundle_id: ${{ steps.r.outputs.bundle_id }}
       release_tag: ${{ steps.r.outputs.release_tag }}
+      apple: ${{ steps.r.outputs.apple }}
     steps:
       - id: r
         env:
@@ -46,6 +51,7 @@ jobs:
           IN_REF: ${{ inputs.ref }}
           IN_CHANNEL: ${{ inputs.channel || 'prerelease' }}
           IN_BID: ${{ inputs.bundle_id || 'io.nekohasekai.sfamt' }}
+          IN_APPLE: ${{ inputs.apple_ref }}
           EVENT: ${{ github.event_name }}
         run: |
           set -euo pipefail
@@ -59,6 +65,22 @@ jobs:
           VERSION="${TAG#v}"
           RTAG="$TAG"
           if [ "$IN_BID" != "io.nekohasekai.sfamt" ]; then RTAG="$TAG-$IN_BID"; fi
+          # 匹配 sing-box-for-apple 中 "Bump version <VERSION>" 提交（与官方 CI 一致）
+          APPLE=""
+          if [ -n "$IN_APPLE" ]; then
+            APPLE="$IN_APPLE"
+          else
+            for b in dev main stable; do
+              APPLE=$(gh api "repos/SagerNet/sing-box-for-apple/commits?sha=$b&per_page=100" \
+                -q ".[] | select(.commit.message | split(\"\n\")[0] == \"Bump version $VERSION\") | .sha" | head -n1)
+              [ -n "$APPLE" ] && break
+            done
+            if [ -z "$APPLE" ]; then
+              case "$VERSION" in *-*) APPLE=dev;; *) APPLE=main;; esac
+              echo "::warning::未找到 Bump version $VERSION，回退到 $APPLE 分支"
+            fi
+          fi
+          echo "apple=$APPLE" >> "$GITHUB_OUTPUT"
           SKIP=false
           if [ "$EVENT" = "schedule" ] && gh release view "$RTAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             SKIP=true
@@ -87,6 +109,14 @@ jobs:
           ref: ${{ needs.resolve.outputs.tag }}
           submodules: recursive
           fetch-depth: 1
+
+      - name: Checkout matching Apple client
+        run: |
+          cd clients/apple
+          git fetch --depth 1 origin "${{ needs.resolve.outputs.apple }}"
+          git checkout -f FETCH_HEAD
+          git submodule update --init --recursive
+          git log -1 --format='Apple client: %h %s'
 
       - name: Read Go version
         id: gov
