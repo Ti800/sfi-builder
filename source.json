@@ -18,10 +18,10 @@
       "versions": [
         {
           "version": "1.15.0-alpha.12",
-          "date": "2026-10-19T09:47:48Z",
+          "date": "2026-10-19T10:30:48Z",
           "localizedDescription": "sing-box v1.15.0-alpha.12 (pre-release)",
           "downloadURL": "https://github.com/Ti800/sfi-builder/releases/download/v1.15.0-alpha.12/SFI-1.15.0-alpha.12-full-unsigned.ipa",
-          "size": 44696287,
+          "size": 44696303,
           "minOSVersion": "15.0"
         }
       ],
@@ -30,9 +30,9 @@
         "privacy": {}
       },
       "version": "1.15.0-alpha.12",
-      "versionDate": "2026-10-19T09:47:48Z",
+      "versionDate": "2026-10-19T10:30:48Z",
       "downloadURL": "https://github.com/Ti800/sfi-builder/releases/download/v1.15.0-alpha.12/SFI-1.15.0-alpha.12-full-unsigned.ipa",
-      "size": 44696287,
+      "size": 44696303,
       "versionDescription": "sing-box v1.15.0-alpha.12 (pre-release)"
     }
   ],
