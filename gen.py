@@ -39,24 +39,26 @@ for rel in releases:
     m = re.search(r"Bundle ID: `([^`]+)`", body)
     bid = m.group(1) if m else DEFAULT_BID
     m = re.search(r"App version: `([^`]+)`", body)
-    ipa = next((a for a in rel["assets"] if a["name"].endswith(".ipa")), None)
-    if not ipa:
+    ipas = [a for a in rel["assets"] if a["name"].endswith(".ipa")]
+    if not ipas:
         continue
     version = m.group(1) if m else rel["tag_name"].lstrip("v").split("-" + bid)[0]
-    groups.setdefault(bid, []).append({
-        "version": version,
-        "date": rel["published_at"],
-        "localizedDescription": f"sing-box {rel['tag_name'].split('-' + bid)[0]}"
-                                + (" (pre-release)" if rel["prerelease"] else ""),
-        "downloadURL": ipa["browser_download_url"],
-        "size": ipa["size"],
-        "minOSVersion": "15.0",
-    })
+    for ipa in ipas:
+        gm = re.search(r"-(group\.[^/]+?)-full-unsigned\.ipa$", ipa["name"])
+        key = (bid, gm.group(1) if gm else None)
+        groups.setdefault(key, []).append({
+            "version": version,
+            "date": rel["published_at"],
+            "localizedDescription": f"sing-box {rel['tag_name'].split('-' + bid)[0]}"
+                                    + (" (pre-release)" if rel["prerelease"] else ""),
+            "downloadURL": ipa["browser_download_url"],
+            "size": ipa["size"],
+            "minOSVersion": "15.0",
+        })
 
-if DEFAULT_BID not in groups:
-    groups[DEFAULT_BID] = []
+groups.setdefault((DEFAULT_BID, None), [])
 
-for bid, versions in groups.items():
+for (bid, grp), versions in groups.items():
     versions.sort(key=lambda v: v["date"], reverse=True)
     versions = versions[:KEEP]
     app = {
@@ -76,8 +78,8 @@ for bid, versions in groups.items():
         app.update(version=v["version"], versionDate=v["date"], downloadURL=v["downloadURL"],
                    size=v["size"], versionDescription=v["localizedDescription"])
     src = {
-        "name": "sing-box (SFI builds)" + ("" if bid == DEFAULT_BID else f" - {bid}"),
-        "identifier": "io.github.ti800.sfi-builder" + ("" if bid == DEFAULT_BID else "." + bid),
+        "name": "sing-box (SFI builds)" + ("" if bid == DEFAULT_BID else f" - {bid}") + (f" [{grp}]" if grp else ""),
+        "identifier": "io.github.ti800.sfi-builder" + ("" if bid == DEFAULT_BID else "." + bid) + ("." + grp if grp else ""),
         "subtitle": "Unsigned full SFI IPA from official source",
         "website": f"https://github.com/{REPO}",
         "iconURL": f"{RAW}/icon.png",
@@ -85,7 +87,8 @@ for bid, versions in groups.items():
         "apps": [app],
         "news": [],
     }
-    fn = "source.json" if bid == DEFAULT_BID else f"source-{bid}.json"
+    parts = ([] if bid == DEFAULT_BID else [bid]) + ([grp] if grp else [])
+    fn = "source.json" if not parts else "source-" + "-".join(parts) + ".json"
     with open(fn, "w") as f:
         json.dump(src, f, ensure_ascii=False, indent=2)
         f.write("\n")

@@ -16,6 +16,10 @@ on:
         description: "BASE_PACKAGE_IDENTIFIER（主 App Bundle ID，扩展为 <id>.extension 等）"
         required: true
         default: "io.nekohasekai.sfamt"
+      app_groups:
+        description: "额外 App Group 变体（逗号分隔，每个出一个 IPA；留空用仓库默认 EXTRA_GROUPS）"
+        required: false
+        default: ""
       apple_ref:
         description: "sing-box-for-apple 提交/分支（留空=自动匹配 Bump version 提交）"
         required: false
@@ -101,6 +105,8 @@ jobs:
       VERSION: ${{ needs.resolve.outputs.version }}
       BID: ${{ needs.resolve.outputs.bundle_id }}
       DISABLE_SWIFTLINT: "1"
+      # 证书描述文件里的 App Group，每个额外打一个 IPA（Info.plist 注入，无需重编）
+      EXTRA_GROUPS: ${{ inputs.app_groups || 'group.9eafd57774840602.1' }}
     steps:
       - name: Checkout sing-box (official)
         uses: actions/checkout@v5
@@ -177,55 +183,60 @@ jobs:
           set -euo pipefail
           APP="build/dd/Build/Products/Release-iphoneos/sing-box.app"
           [ -d "$APP" ] || { find build/dd/Build/Products -maxdepth 3; exit 1; }
-          rm -rf build/ipa build/ent && mkdir -p build/ipa/Payload build/ent
-          cp -R "$APP" build/ipa/Payload/
-          A="build/ipa/Payload/sing-box.app"
-          GROUP="group.$BID"
-          # 版本号写成核心版本，方便 Feather/AltStore 判断更新
-          for pl in "$A/Info.plist" "$A"/PlugIns/*.appex/Info.plist "$A"/Extensions/*.appex/Info.plist; do
-            [ -f "$pl" ] || continue
-            /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$pl"
-          done
-          mkent() {
-            sed -e "s#\$(APP_GROUP_IDENTIFIER)#$GROUP#g" \
-                -e "s#\$(BASE_PACKAGE_IDENTIFIER)#$BID#g" "$1" > "$2"
+          rm -rf build/out && mkdir -p build/out
+          make_ipa() { # $1 app group  $2 name suffix
+            local GROUP="$1" SUF="$2" W="build/w$SUF"
+            rm -rf "$W" && mkdir -p "$W/ipa/Payload" "$W/ent"
+            cp -R "$APP" "$W/ipa/Payload/"
+            local A="$W/ipa/Payload/sing-box.app"
+            for pl in "$A/Info.plist" "$A"/PlugIns/*.appex/Info.plist "$A"/Extensions/*.appex/Info.plist; do
+              [ -f "$pl" ] || continue
+              /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$pl"
+              /usr/libexec/PlistBuddy -c "Set :AppGroupIdentifier $GROUP" "$pl" 2>/dev/null || true
+            done
+            mkent() {
+              sed -e "s#\$(APP_GROUP_IDENTIFIER)#$GROUP#g" \
+                  -e "s#\$(BASE_PACKAGE_IDENTIFIER)#$BID#g" "$1" > "$2"
+            }
+            sign() {
+              if [ -n "${2:-}" ] && [ -f "$2" ]; then
+                local out="$W/ent/$(basename "$1").entitlements"; mkent "$2" "$out"
+                codesign -f -s - --entitlements "$out" --generate-entitlement-der "$1"
+              else
+                codesign -f -s - "$1"
+              fi
+            }
+            find "$A" -depth -name "*.dylib" | while read -r f; do codesign -f -s - "$f"; done
+            find "$A" -depth -name "*.framework" | while read -r f; do sign "$f"; done
+            for ext in "$A"/PlugIns/*.appex "$A"/Extensions/*.appex; do
+              [ -d "$ext" ] || continue
+              n=$(basename "$ext" .appex)
+              sign "$ext" "$n/$n.entitlements"
+            done
+            sign "$A" "SFI/SFI.entitlements"
+            echo "== $GROUP =="
+            for e in "$A" "$A"/PlugIns/*.appex "$A"/Extensions/*.appex; do
+              [ -d "$e" ] || continue
+              echo "$(basename "$e")  $(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$e/Info.plist")  $(/usr/libexec/PlistBuddy -c 'Print AppGroupIdentifier' "$e/Info.plist" 2>/dev/null)"
+            done
+            (cd "$W/ipa" && zip -qry "$OLDPWD/build/out/SFI-${VERSION}${SUF}-full-unsigned.ipa" Payload)
+            (cd "$W/ent" && zip -qr "$OLDPWD/build/out/entitlements-${VERSION}${SUF}.zip" .)
           }
-          sign() {
-            if [ -n "${2:-}" ] && [ -f "$2" ]; then
-              out="build/ent/$(basename "$1").entitlements"; mkent "$2" "$out"
-              codesign -f -s - --entitlements "$out" --generate-entitlement-der "$1"
-            else
-              codesign -f -s - "$1"
-            fi
-          }
-          find "$A" -depth -name "*.dylib" | while read -r f; do codesign -f -s - "$f"; done
-          find "$A" -depth -name "*.framework" | while read -r f; do sign "$f"; done
-          for ext in "$A"/PlugIns/*.appex "$A"/Extensions/*.appex; do
-            [ -d "$ext" ] || continue
-            n=$(basename "$ext" .appex)
-            sign "$ext" "$n/$n.entitlements"
+          BASE_SUF=""
+          if [ "$BID" != "io.nekohasekai.sfamt" ]; then BASE_SUF="-$BID"; fi
+          make_ipa "group.$BID" "$BASE_SUF"
+          IFS=',' read -ra GS <<< "$EXTRA_GROUPS"
+          for g in "${GS[@]}"; do
+            g=$(echo "$g" | xargs); [ -n "$g" ] || continue
+            [ "$g" = "group.$BID" ] && continue
+            make_ipa "$g" "$BASE_SUF-$g"
           done
-          sign "$A" "SFI/SFI.entitlements"
-          echo "== bundles =="
-          for e in "$A"/PlugIns/*.appex "$A"/Extensions/*.appex; do
-            [ -d "$e" ] || continue
-            echo "$(basename "$e")  $(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$e/Info.plist")"
-          done
-          echo "sing-box.app  $(/usr/libexec/PlistBuddy -c 'Print CFBundleIdentifier' "$A/Info.plist")  $(/usr/libexec/PlistBuddy -c 'Print CFBundleShortVersionString' "$A/Info.plist")"
-          NAME="SFI-${VERSION}-full-unsigned.ipa"
-          if [ "$BID" != "io.nekohasekai.sfamt" ]; then NAME="SFI-${VERSION}-${BID}-full-unsigned.ipa"; fi
-          (cd build/ipa && zip -qry "../$NAME" Payload)
-          (cd build/ent && zip -qr "../entitlements-${VERSION}.zip" .)
-          ls -lh build/*.ipa build/*.zip
-          echo "IPA=clients/apple/build/$NAME" >> "$GITHUB_ENV"
-          echo "ENTZIP=clients/apple/build/entitlements-${VERSION}.zip" >> "$GITHUB_ENV"
+          ls -lh build/out
 
       - uses: actions/upload-artifact@v4
         with:
           name: SFI-${{ needs.resolve.outputs.version }}-full-unsigned
-          path: |
-            ${{ env.IPA }}
-            ${{ env.ENTZIP }}
+          path: clients/apple/build/out/*
           compression-level: 0
 
       - name: Publish release
@@ -247,13 +258,14 @@ jobs:
           - sing-box-for-apple: \`$APPLE_SHA\`
           - App version: \`$VERSION\`
           - Bundle ID: \`$BID\`（App Group: \`group.$BID\`）
+          - 额外 App Group 变体：\`$EXTRA_GROUPS\`（文件名带 group 后缀，Info.plist 的 AppGroupIdentifier 已改）
           - 扩展：Extension（VPN）/ Widget / Share / Action / FileProvider / Intents
 
           重签需为每个 appex 准备对应描述文件；主 App 与 Extension 需 Network Extension (packet-tunnel-provider) 权限。
           EOF
           gh release delete "$RTAG" -R "$GITHUB_REPOSITORY" -y --cleanup-tag 2>/dev/null || true
           gh release create "$RTAG" -R "$GITHUB_REPOSITORY" $PRE --target main \
-            --title "$TITLE" --notes-file notes.md "$IPA" "$ENTZIP"
+            --title "$TITLE" --notes-file notes.md clients/apple/build/out/*
 
   source:
     needs: build
